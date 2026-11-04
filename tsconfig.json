@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "infra", "test", "vitest.config.ts"]
+  "include": ["src", "infra", "test", "local", "vitest.config.ts"]
 }

@@ -3,3 +3,4 @@ cdk.out/
 coverage/
 *.log
 .env*
+!.env.example

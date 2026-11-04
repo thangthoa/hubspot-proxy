@@ -8,6 +8,9 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 let cached: { token: string; expiresAt: number } | undefined;
 
 export async function getHubSpotToken(): Promise<string> {
+  // Local runs only (npm run local). The Lambda never has HUBSPOT_TOKEN set.
+  const localToken = process.env.HUBSPOT_TOKEN?.trim();
+  if (localToken) return localToken;
   if (cached && cached.expiresAt > Date.now()) return cached.token;
 
   const out = await client.send(new GetSecretValueCommand({ SecretId: requireEnv('HUBSPOT_SECRET_ARN') }));

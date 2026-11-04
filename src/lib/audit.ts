@@ -37,6 +37,12 @@ export async function recordAudit(entries: AuditEntry[]): Promise<void> {
     expiresAt: Math.floor(now.getTime() / 1000) + retentionDays * 86_400,
   }));
 
+  if (process.env.AUDIT_SINK === 'console') {
+    // Local runs only: print instead of writing to DynamoDB.
+    console.log(JSON.stringify({ level: 'info', event: 'AUDIT', entries: items }, null, 2));
+    return;
+  }
+
   try {
     const table = requireEnv('AUDIT_TABLE_NAME');
     for (let start = 0; start < items.length; start += BATCH_WRITE_MAX) {

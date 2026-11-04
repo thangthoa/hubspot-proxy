@@ -75,6 +75,33 @@ npm test
 npx cdk synth --context env=dev
 ```
 
+### Run the proxy locally against a real HubSpot account
+
+`npm run local` serves the Lambda on `http://localhost:3001`, reading the HubSpot key from `HUBSPOT_TOKEN` instead of Secrets Manager and printing audit records to the console instead of DynamoDB. Use a test HubSpot account, not Namy's production data.
+
+```bash
+cp .env.example .env.local   # then paste the key after HUBSPOT_TOKEN= in .env.local
+npm run local
+```
+
+`.env.local` is git-ignored. Alternatively, skip the file and export the key in the same shell: `read -rs HUBSPOT_TOKEN && export HUBSPOT_TOKEN && npm run local`.
+
+Then, from another terminal:
+
+```bash
+curl "http://localhost:3001/contacts?limit=5"
+curl "http://localhost:3001/contacts/<id>"
+curl -X POST http://localhost:3001/contacts -H "Content-Type: application/json" \
+  -d '{"properties":{"email":"test1@example.com","firstname":"Test"}}'
+curl -X POST http://localhost:3001/contacts/batch -H "Content-Type: application/json" \
+  -d '{"inputs":[{"properties":{"email":"test2@example.com"}},{"properties":{"email":"test3@example.com"}}]}'
+curl -X PATCH http://localhost:3001/contacts/<id> -H "Content-Type: application/json" \
+  -d '{"properties":{"city":"Hanoi"}}'
+curl -X DELETE http://localhost:3001/contacts/<id>   # rejected: METHOD_NOT_ALLOWED
+```
+
+No partner token is needed locally: every request acts as a partner holding both scopes. Set `LOCAL_SCOPES=namy-api/contacts.read` to test a read-only partner.
+
 ## Deploy
 
 **1. Prepare (once per account and region):**
@@ -99,8 +126,11 @@ aws secretsmanager put-secret-value \
   --secret-string 'pat-na1-xxxxxxxx'
 ```
 
-- dev: use a **HubSpot sandbox** token, never real customer data.
-- Get the token in HubSpot under Settings → Integrations → Private Apps (newer UI: Development → Legacy apps), granting only `crm.objects.contacts.read` and `crm.objects.contacts.write`.
+- dev: use a **HubSpot sandbox** or test account, never real customer data.
+- Create the key in HubSpot with only the `crm.objects.contacts.read` and `crm.objects.contacts.write` scopes:
+  - **New HubSpot accounts:** Development → Legacy Apps → **Create a service key**.
+  - **Older accounts:** Development → Legacy Apps → Create legacy app → Private (token starts with `pat-`).
+  - Both are sent as `Authorization: Bearer <key>`; the proxy works the same with either.
 - The Lambda picks up a new token within 5 minutes, or immediately when HubSpot returns 401.
 
 **4. Collect the credentials for a partner.** The `client_id` is in the stack output `PartnerClientId-<name>`. Get the `client_secret` with:
@@ -134,7 +164,7 @@ curl -X PATCH "<ApiUrl>contacts/101" \
 
 - **Add a partner:** add it to `partners` in `cdk.json`, redeploy, then get its `client_secret` as in step 4.
 - **Revoke a partner:** remove it from `partners` and redeploy. Tokens already issued stay valid for up to 1 hour; to block immediately, add a WAF rule that blocks the partner's IP.
-- **Rotate the HubSpot token:** click *Rotate* in HubSpot, then run the `put-secret-value` command from step 3 again.
+- **Rotate the HubSpot key:** rotate it in HubSpot (service key or private app), then run the `put-secret-value` command from step 3 again.
 - **Find who changed a contact:** query the DynamoDB table (output `AuditTableName`) with `pk = contact#<id>`; to search by partner, use the `byClient` index. The `before` attribute holds the previous values for restoring.
 - **`AuditWriteFailed` alarm:** a change reached HubSpot but its audit record was not stored. Look up the Lambda's CloudWatch logs by `requestId` and add the record manually.
 

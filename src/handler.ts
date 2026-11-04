@@ -70,6 +70,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ms: Date.now() - startedAt,
       requestId,
       ...(apiError.status >= 500 && { cause: errorMessage(err) }),
+      ...(err instanceof HubSpotError && apiError.status >= 500 && { upstream: upstreamSummary(err.body) }),
     });
     const { status, code, message, details } = apiError;
     return respond(status, { error: { code, message, details, requestId } }, requestId);
@@ -137,6 +138,13 @@ async function updateRoute({ event, clientId, requestId }: RequestContext): Prom
     },
   ]);
   return { status: 200, body: toPublicContact(updated) };
+}
+
+/** HubSpot's error category and message, for operators. Only logged for 5xx-mapped errors, which carry no contact data. */
+function upstreamSummary(body: unknown) {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { category, message } = body as { category?: unknown; message?: unknown };
+  return { category, message: typeof message === 'string' ? message.slice(0, 300) : undefined };
 }
 
 function assertScope(scopeClaim: unknown, required: string): void {

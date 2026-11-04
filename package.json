@@ -4,6 +4,7 @@
   "private": true,
   "description": "Read/create/update-only proxy in front of the HubSpot Contacts API for third-party partners",
   "scripts": {
+    "local": "tsx local/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "synth": "cdk synth",
