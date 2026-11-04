@@ -9,8 +9,11 @@
     "test": "vitest run",
     "synth": "cdk synth",
     "diff": "cdk diff",
-    "deploy:dev": "cdk deploy --context env=dev",
-    "deploy:prod": "cdk deploy --context env=prod --require-approval broadening"
+    "deploy:dev": "cdk deploy --context env=dev --outputs-file cdk-outputs-dev.json",
+    "deploy:prod": "cdk deploy --context env=prod --require-approval broadening --outputs-file cdk-outputs-prod.json",
+    "bootstrap": "cdk bootstrap --context env=dev",
+    "e2e:dev": "tsx scripts/e2e.mts cdk-outputs-dev.json",
+    "partner:credentials": "tsx scripts/partner-credentials.mts"
   },
   "engines": {
     "node": ">=22"

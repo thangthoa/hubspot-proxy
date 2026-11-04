@@ -289,6 +289,8 @@ function addJsonGatewayResponses(api: apigw.RestApi): void {
   const headers = { 'Cache-Control': "'no-store'" };
 
   // Raised for any method/path that is not defined, e.g. DELETE /contacts/{id}.
+  // If the caller also sends an Authorization header, API Gateway answers 403 (bad SigV4 signature) instead;
+  // that case cannot be customised and is still blocked before the Lambda.
   api.addGatewayResponse('RouteNotFound', {
     type: apigw.ResponseType.MISSING_AUTHENTICATION_TOKEN,
     statusCode: '404',

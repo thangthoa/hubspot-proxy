@@ -34,6 +34,13 @@ describe('HubSpotProxyStack', () => {
     }
   });
 
+  it('answers undefined routes with 404', () => {
+    template.hasResourceProperties('AWS::ApiGateway::GatewayResponse', {
+      ResponseType: 'MISSING_AUTHENTICATION_TOKEN',
+      StatusCode: '404',
+    });
+  });
+
   it('never defines DELETE or ANY methods', () => {
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', { HttpMethod: 'DELETE' }, 0);
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', { HttpMethod: 'ANY' }, 0);
