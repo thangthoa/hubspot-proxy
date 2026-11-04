@@ -1,19 +1,19 @@
 # Namy HubSpot Proxy
 
-API trung gian (proxy) trên AWS cho phép đối tác bên thứ 3 **đọc, tạo, cập nhật** contact trên HubSpot của Namy, **không có quyền xóa**. Đối tác không bao giờ cầm HubSpot token; token nằm trong AWS Secrets Manager và chỉ Lambda đọc được.
+A proxy API on AWS that lets third-party partners **read, create and update** contacts in Namy's HubSpot account, with **no way to delete them**. Partners never hold the HubSpot token: it lives in AWS Secrets Manager and only the Lambda function can read it.
 
 ```
-Đối tác ──① client_id/secret──► Cognito ──► access token (1 giờ, có scope)
+Partner ──① client_id/secret──► Cognito ──► access token (1 hour, scoped)
    │
-   └──② Bearer token──► WAF ──► API Gateway (5 route, kiểm scope, validate body)
+   └──② Bearer token──► WAF ──► API Gateway (5 routes, scope check, body validation)
                                     └──► Lambda ──► HubSpot API
                                            ├── Secrets Manager (HubSpot token)
-                                           └── DynamoDB (log kiểm toán: ai sửa gì, giá trị trước/sau)
+                                           └── DynamoDB (audit log: who changed what, before/after values)
 ```
 
-## Các thao tác đối tác được làm
+## What partners can do
 
-| Endpoint | Scope | HubSpot |
+| Endpoint | Scope | HubSpot call |
 |---|---|---|
 | `GET /contacts?limit=&after=` | `namy-api/contacts.read` | `GET /crm/v3/objects/contacts` |
 | `GET /contacts/{id}` | `namy-api/contacts.read` | `GET /crm/v3/objects/contacts/{id}` |
@@ -21,52 +21,52 @@ API trung gian (proxy) trên AWS cho phép đối tác bên thứ 3 **đọc, t�
 | `POST /contacts/batch` (≤ 100) | `namy-api/contacts.write` | `POST /crm/v3/objects/contacts/batch/create` |
 | `PATCH /contacts/{id}` | `namy-api/contacts.write` | `PATCH /crm/v3/objects/contacts/{id}` |
 
-Mọi method/đường dẫn khác (DELETE, archive, merge, object khác) **không tồn tại** trên API Gateway và trả `404 ROUTE_NOT_FOUND`. Đặc tả cho đối tác: [openapi.yaml](openapi.yaml).
+Every other method or path (DELETE, archive, merge, other CRM objects) **does not exist** on API Gateway and returns `404 ROUTE_NOT_FOUND`. The partner-facing specification is in [openapi.yaml](openapi.yaml).
 
-## Các lớp bảo vệ
+## Safeguards
 
-- **Không có route xóa.** Lambda cũng từ chối mọi route ngoài danh sách (405), phòng khi cấu hình API Gateway bị sửa nhầm.
-- **Allowlist trường** trong [src/lib/config.ts](src/lib/config.ts):
-  - `READ_PROPERTIES`: trường trả về cho đối tác, trường khác bị lọc bỏ.
-  - `WRITE_PROPERTIES`: trường được ghi, trường khác trả `400 FIELD_NOT_ALLOWED`.
-  - `NON_CLEARABLE_PROPERTIES`: không được xóa trắng qua update (chặn "xóa ngầm").
-  - `CREATE_REQUIRED_PROPERTIES`: trường bắt buộc khi tạo.
-- **Log kiểm toán** (DynamoDB): mỗi lần tạo/sửa ghi `clientId`, contact, trường đã đổi, **giá trị trước khi sửa** để khôi phục được. Bảng mã hóa, có point-in-time recovery, tự xóa sau `auditRetentionDays`.
-- **Kiểm scope hai lần**: API Gateway (Cognito authorizer) và trong Lambda.
-- **Không thử lại POST** khi HubSpot lỗi 5xx/timeout (tránh tạo trùng); chỉ thử lại khi `429`. GET/PATCH thử lại tối đa 3 lần khi gặp `429`, `5xx` hoặc lỗi mạng (không thử lại khi đã timeout, để không vượt thời gian chạy của Lambda).
-- **Lỗi HubSpot không lộ ra ngoài**: lỗi xác thực HubSpot trả `502 UPSTREAM_ERROR` cho đối tác.
-- **WAF**: giới hạn số request mỗi IP trong 5 phút (= `throttle.rateLimit` × 300), chặn input độc hại phổ biến, tùy chọn chỉ cho phép IP đối tác.
-- **Log không chứa giá trị dữ liệu khách**, chỉ có id và tên trường.
-- **Cảnh báo CloudWatch**: Lambda lỗi, API trả 5xx, ghi log kiểm toán thất bại, HubSpot throttle nhiều.
+- **No delete route.** The Lambda also rejects any route outside its list (405), in case the API Gateway configuration is changed by mistake.
+- **Field allowlists** in [src/lib/config.ts](src/lib/config.ts):
+  - `READ_PROPERTIES`: fields returned to partners; everything else is filtered out.
+  - `WRITE_PROPERTIES`: fields partners may write; anything else returns `400 FIELD_NOT_ALLOWED`.
+  - `NON_CLEARABLE_PROPERTIES`: fields that cannot be emptied through an update (blocks "deleting" data via update).
+  - `CREATE_REQUIRED_PROPERTIES`: fields required when creating a contact.
+- **Audit log** (DynamoDB): every create and update records the `clientId`, the contact, the changed fields and **the values before the change**, so a contact can be restored. The table is encrypted, has point-in-time recovery, and expires records after `auditRetentionDays`.
+- **Scopes are checked twice**: by API Gateway (Cognito authorizer) and again in the Lambda.
+- **POST is never retried** after a HubSpot 5xx or timeout (to avoid duplicate contacts); it is retried only on `429`. GET and PATCH are retried up to 3 times on `429`, `5xx` or network errors, but not after a timeout, so the Lambda stays within its time limit.
+- **HubSpot errors are not exposed**: a HubSpot authentication failure is returned to partners as `502 UPSTREAM_ERROR`.
+- **WAF**: per-IP request limit over 5 minutes (= `throttle.rateLimit` × 300), blocks common malicious inputs, and can optionally allow partner IPs only.
+- **Logs contain no customer data values**, only ids and field names.
+- **CloudWatch alarms**: Lambda errors, API 5xx responses, failed audit writes, and frequent HubSpot throttling.
 
-> ⚠️ Danh sách trường trong `src/lib/config.ts` đang là **giá trị mẫu**. Phải chốt với Namy trước khi lên prod, và cập nhật `ContactProperties` trong `openapi.yaml` cho khớp.
+> ⚠️ The field lists in `src/lib/config.ts` are **placeholder values**. Confirm them with Namy before going to production, and update `ContactProperties` in `openapi.yaml` to match.
 
-## Cấu trúc
+## Project structure
 
 ```
-infra/bin/app.ts           chọn môi trường (dev/prod) từ cdk.json
-infra/lib/proxy-stack.ts   toàn bộ hạ tầng: Cognito, API Gateway, WAF, Lambda, Secrets Manager, DynamoDB, alarm
-src/handler.ts             Lambda: định tuyến 5 thao tác
-src/lib/                   config (allowlist), validate, hubspot client, secrets, audit, log, errors
-test/                      unit test Lambda + test template hạ tầng
-openapi.yaml               tài liệu API cho đối tác
-cdk.json                   cấu hình từng môi trường
+infra/bin/app.ts           picks the environment (dev/prod) from cdk.json
+infra/lib/proxy-stack.ts   all infrastructure: Cognito, API Gateway, WAF, Lambda, Secrets Manager, DynamoDB, alarms
+src/handler.ts             Lambda entry point: routes the 5 operations
+src/lib/                   config (allowlists), validation, HubSpot client, secrets, audit, logging, errors
+test/                      Lambda unit tests and infrastructure template tests
+openapi.yaml               API documentation for partners
+cdk.json                   per-environment configuration
 ```
 
-## Cấu hình môi trường (`cdk.json` → `context.environments`)
+## Environment configuration (`cdk.json` → `context.environments`)
 
-| Khóa | Ý nghĩa |
+| Key | Meaning |
 |---|---|
-| `region` | Region AWS, mặc định `ap-southeast-1` |
-| `cognitoDomainPrefix` | Tiền tố URL lấy token, **duy nhất toàn cầu**, không chứa chữ `aws`/`cognito` |
-| `partners` | Danh sách đối tác: `{ "name": "abc", "scopes": ["read"] }` hoặc `["read","write"]` |
-| `allowedIps` | IP đối tác dạng CIDR (vd `203.0.113.10/32`); để trống = không giới hạn IP |
-| `alarmEmail` | Email nhận cảnh báo; để trống = không gửi |
-| `auditRetentionDays` | Số ngày giữ log kiểm toán |
-| `throttle` | Giới hạn request/giây của API |
-| `reservedConcurrency` | (tùy chọn) Giới hạn số Lambda chạy song song để bảo vệ hạn mức HubSpot. Cần tài khoản AWS còn dư concurrency |
+| `region` | AWS region; defaults to `ap-southeast-1` |
+| `cognitoDomainPrefix` | Prefix of the token URL; must be **globally unique** and must not contain `aws` or `cognito` |
+| `partners` | Partner list: `{ "name": "abc", "scopes": ["read"] }` or `["read","write"]` |
+| `allowedIps` | Partner IPs in CIDR form (e.g. `203.0.113.10/32`); empty = no IP restriction |
+| `alarmEmail` | Address that receives alarms; empty = no notifications |
+| `auditRetentionDays` | How many days audit records are kept |
+| `throttle` | API request rate limits (per second) |
+| `reservedConcurrency` | (optional) Caps concurrent Lambda executions to protect the HubSpot API quota. Requires spare concurrency in the AWS account |
 
-## Chạy và kiểm thử trên máy
+## Run and test locally
 
 ```bash
 npm install
@@ -77,7 +77,7 @@ npx cdk synth --context env=dev
 
 ## Deploy
 
-**1. Chuẩn bị (làm một lần cho mỗi tài khoản/region):**
+**1. Prepare (once per account and region):**
 
 ```bash
 npx cdk bootstrap aws://<ACCOUNT_ID>/ap-southeast-1
@@ -89,9 +89,9 @@ npx cdk bootstrap aws://<ACCOUNT_ID>/ap-southeast-1
 npm run deploy:dev
 ```
 
-Prod: `npm run deploy:prod`. Nên chạy qua CI/CD có người duyệt, không deploy tay.
+Production: `npm run deploy:prod`. Run it through CI/CD with an approval step rather than deploying by hand.
 
-**3. Nhập HubSpot token thật vào Secrets Manager** (Namy làm; secret được tạo với giá trị ngẫu nhiên làm chỗ trống):
+**3. Store the real HubSpot token in Secrets Manager** (done by Namy; the secret is created with a random placeholder value):
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -99,11 +99,11 @@ aws secretsmanager put-secret-value \
   --secret-string 'pat-na1-xxxxxxxx'
 ```
 
-- dev: dùng token của **HubSpot sandbox**, không dùng dữ liệu thật.
-- Token lấy từ HubSpot: Settings → Integrations → Private Apps (giao diện mới: Development → Legacy apps), chỉ cấp `crm.objects.contacts.read` và `crm.objects.contacts.write`.
-- Lambda tự đọc lại token sau tối đa 5 phút, hoặc ngay khi HubSpot trả 401.
+- dev: use a **HubSpot sandbox** token, never real customer data.
+- Get the token in HubSpot under Settings → Integrations → Private Apps (newer UI: Development → Legacy apps), granting only `crm.objects.contacts.read` and `crm.objects.contacts.write`.
+- The Lambda picks up a new token within 5 minutes, or immediately when HubSpot returns 401.
 
-**4. Lấy thông tin gửi cho đối tác.** `client_id` nằm trong output `PartnerClientId-<tên>` của stack. Lấy `client_secret`:
+**4. Collect the credentials for a partner.** The `client_id` is in the stack output `PartnerClientId-<name>`. Get the `client_secret` with:
 
 ```bash
 aws cognito-idp describe-user-pool-client \
@@ -111,18 +111,18 @@ aws cognito-idp describe-user-pool-client \
   --query 'UserPoolClient.ClientSecret' --output text
 ```
 
-Gửi `client_id`, `client_secret`, `TokenUrl`, `ApiUrl` và `openapi.yaml` cho đối tác. **`client_secret` phải gửi qua kênh an toàn** (password manager dùng chung hoặc link tự hủy), không gửi qua email/chat thường.
+Send the partner the `client_id`, `client_secret`, `TokenUrl`, `ApiUrl` and `openapi.yaml`. **Share the `client_secret` over a secure channel** (a shared password manager or a self-destructing link), never by plain email or chat.
 
-## Đối tác gọi API
+## Calling the API (partner side)
 
 ```bash
-# Lấy token (dùng lại tới khi hết hạn, 1 giờ)
+# Get a token (reuse it until it expires after 1 hour)
 curl -X POST "<TokenUrl>" \
   -u "<client_id>:<client_secret>" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials&scope=namy-api/contacts.read namy-api/contacts.write"
 
-# Gọi API
+# Call the API
 curl "<ApiUrl>contacts?limit=20" -H "Authorization: Bearer <access_token>"
 
 curl -X PATCH "<ApiUrl>contacts/101" \
@@ -130,18 +130,18 @@ curl -X PATCH "<ApiUrl>contacts/101" \
   -d '{"properties":{"city":"Hanoi"}}'
 ```
 
-## Vận hành
+## Operations
 
-- **Thêm đối tác:** thêm vào `partners` trong `cdk.json`, deploy lại, lấy `client_secret` như bước 4.
-- **Thu hồi đối tác:** xóa khỏi `partners` và deploy lại. Token đã cấp còn hiệu lực tối đa 1 giờ; cần chặn ngay thì thêm rule chặn IP trên WAF.
-- **Xoay HubSpot token:** trên HubSpot bấm *Rotate*, rồi chạy lại lệnh `put-secret-value` ở bước 3.
-- **Tra cứu ai đã sửa contact:** bảng DynamoDB (output `AuditTableName`), khóa `pk = contact#<id>`; theo đối tác dùng index `byClient`. Cột `before` chứa giá trị cũ để khôi phục.
-- **Cảnh báo `AuditWriteFailed`:** thay đổi đã vào HubSpot nhưng chưa ghi được log kiểm toán. Tra CloudWatch log của Lambda theo `requestId` để bổ sung thủ công.
+- **Add a partner:** add it to `partners` in `cdk.json`, redeploy, then get its `client_secret` as in step 4.
+- **Revoke a partner:** remove it from `partners` and redeploy. Tokens already issued stay valid for up to 1 hour; to block immediately, add a WAF rule that blocks the partner's IP.
+- **Rotate the HubSpot token:** click *Rotate* in HubSpot, then run the `put-secret-value` command from step 3 again.
+- **Find who changed a contact:** query the DynamoDB table (output `AuditTableName`) with `pk = contact#<id>`; to search by partner, use the `byClient` index. The `before` attribute holds the previous values for restoring.
+- **`AuditWriteFailed` alarm:** a change reached HubSpot but its audit record was not stored. Look up the Lambda's CloudWatch logs by `requestId` and add the record manually.
 
-## Còn cần chốt với Namy
+## Open questions for Namy
 
-1. Danh sách trường được đọc / được ghi / không được xóa trắng / bắt buộc khi tạo.
-2. Tạo contact trùng email: hiện trả `409 CONTACT_ALREADY_EXISTS`. Có cần chuyển sang cập nhật bản ghi cũ (upsert) không?
-3. IP cố định của từng đối tác (để bật `allowedIps`).
-4. Email nhận cảnh báo, thời gian giữ log kiểm toán.
-5. Gói HubSpot đang dùng (hạn mức API) để đặt `throttle` và `reservedConcurrency` phù hợp.
+1. Which fields partners may read, may write, may never clear, and must provide on create.
+2. Duplicate email on create: currently returns `409 CONTACT_ALREADY_EXISTS`. Should it update the existing contact instead (upsert)?
+3. Fixed IP addresses for each partner (to enable `allowedIps`).
+4. Alarm email address and audit log retention period.
+5. The HubSpot plan in use (API quota), to set `throttle` and `reservedConcurrency` accordingly.
