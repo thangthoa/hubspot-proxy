@@ -1,0 +1,178 @@
+openapi: 3.0.3
+info:
+  title: Namy Contacts API
+  version: 0.1.0
+  description: |
+    Read, create and update contacts in Namy's CRM. Contacts cannot be deleted through this API.
+
+    **Authentication.** Exchange your `client_id` and `client_secret` for an access token
+    (OAuth2 client credentials), then send it as `Authorization: Bearer <token>`.
+    Tokens are valid for 1 hour; reuse a token until it expires instead of requesting one per call.
+
+    **Fields.** Only the fields listed in `ContactProperties` can be read or written.
+    `email`, `firstname` and `lastname` cannot be set to an empty value.
+servers:
+  - url: https://{apiId}.execute-api.ap-southeast-1.amazonaws.com/{stage}
+    variables:
+      apiId: { default: example }
+      stage: { default: prod, enum: [dev, prod] }
+security:
+  - partnerAuth: []
+paths:
+  /contacts:
+    get:
+      summary: List contacts
+      security: [{ partnerAuth: [namy-api/contacts.read] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: after, in: query, description: Cursor from `paging.nextAfter` of the previous page, schema: { type: string } }
+      responses:
+        '200':
+          description: One page of contacts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { $ref: '#/components/schemas/Contact' } }
+                  paging:
+                    type: object
+                    properties:
+                      nextAfter: { type: string, nullable: true, description: null on the last page }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a contact
+      security: [{ partnerAuth: [namy-api/contacts.write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactInput' }
+            example: { properties: { email: jane.doe@example.com, firstname: Jane, lastname: Doe } }
+      responses:
+        '201':
+          description: Created
+          content: { application/json: { schema: { $ref: '#/components/schemas/Contact' } } }
+        '409': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /contacts/batch:
+    post:
+      summary: Create up to 100 contacts
+      description: Returns 201 when every contact was created, 207 when some failed (see `errors`).
+      security: [{ partnerAuth: [namy-api/contacts.write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inputs]
+              properties:
+                inputs: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/ContactInput' } }
+      responses:
+        '201': { $ref: '#/components/responses/BatchResult' }
+        '207': { $ref: '#/components/responses/BatchResult' }
+        default: { $ref: '#/components/responses/Error' }
+  /contacts/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, pattern: '^\d{1,20}$' } }
+    get:
+      summary: Get a contact
+      security: [{ partnerAuth: [namy-api/contacts.read] }]
+      responses:
+        '200':
+          description: The contact
+          content: { application/json: { schema: { $ref: '#/components/schemas/Contact' } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Update a contact
+      description: Only the fields sent are changed.
+      security: [{ partnerAuth: [namy-api/contacts.write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactInput' }
+            example: { properties: { city: Hanoi } }
+      responses:
+        '200':
+          description: The updated contact
+          content: { application/json: { schema: { $ref: '#/components/schemas/Contact' } } }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    partnerAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://namy-hubspot-proxy.auth.ap-southeast-1.amazoncognito.com/oauth2/token
+          scopes:
+            namy-api/contacts.read: List and read contacts
+            namy-api/contacts.write: Create and update contacts
+  schemas:
+    ContactProperties:
+      type: object
+      additionalProperties: false
+      properties:
+        email: { type: string, format: email }
+        firstname: { type: string }
+        lastname: { type: string }
+        phone: { type: string }
+        mobilephone: { type: string }
+        company: { type: string }
+        jobtitle: { type: string }
+        city: { type: string }
+        lifecyclestage: { type: string, readOnly: true }
+        createdate: { type: string, readOnly: true }
+        lastmodifieddate: { type: string, readOnly: true }
+    ContactInput:
+      type: object
+      required: [properties]
+      additionalProperties: false
+      properties:
+        properties:
+          allOf: [{ $ref: '#/components/schemas/ContactProperties' }]
+          description: email is required when creating a contact.
+    Contact:
+      type: object
+      properties:
+        id: { type: string }
+        properties: { $ref: '#/components/schemas/ContactProperties' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: FIELD_NOT_ALLOWED
+              description: |
+                INVALID_BODY, INVALID_QUERY, INVALID_ID, INVALID_VALUE, MISSING_FIELD, FIELD_NOT_ALLOWED,
+                FIELD_CANNOT_BE_CLEARED, DUPLICATE_IN_BATCH, INVALID_REQUEST, INSUFFICIENT_SCOPE, UNAUTHORIZED,
+                CONTACT_NOT_FOUND, ROUTE_NOT_FOUND, CONTACT_ALREADY_EXISTS, RATE_LIMITED, UPSTREAM_ERROR, INTERNAL_ERROR
+            message: { type: string }
+            details: { type: object, nullable: true }
+            requestId: { type: string, description: Quote this when contacting support }
+  responses:
+    Error:
+      description: Error
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    BatchResult:
+      description: Batch result
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              results: { type: array, items: { $ref: '#/components/schemas/Contact' } }
+              errors:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    message: { type: string }
+                    category: { type: string }
+                    context: { type: object }

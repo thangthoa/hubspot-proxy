@@ -1,0 +1,31 @@
+{
+  "app": "npx tsx infra/bin/app.ts",
+  "watch": {
+    "include": ["src/**", "infra/**"]
+  },
+  "context": {
+    "environments": {
+      "dev": {
+        "region": "ap-southeast-1",
+        "cognitoDomainPrefix": "namy-hubspot-proxy-dev",
+        "hubspotBaseUrl": "https://api.hubapi.com",
+        "partners": [
+          { "name": "sample-partner", "scopes": ["read", "write"] }
+        ],
+        "allowedIps": [],
+        "auditRetentionDays": 30,
+        "throttle": { "rateLimit": 10, "burstLimit": 20 }
+      },
+      "prod": {
+        "region": "ap-southeast-1",
+        "cognitoDomainPrefix": "namy-hubspot-proxy",
+        "hubspotBaseUrl": "https://api.hubapi.com",
+        "partners": [],
+        "allowedIps": [],
+        "alarmEmail": "",
+        "auditRetentionDays": 365,
+        "throttle": { "rateLimit": 20, "burstLimit": 40 }
+      }
+    }
+  }
+}
